@@ -1,0 +1,204 @@
+import re
+import requests
+from typing import List, Tuple, Optional
+from bs4 import BeautifulSoup
+import urllib.parse
+
+
+class RussianPostalCodeValidator:
+    RU_POSTAL_PATTERN = re.compile(r'\b\d{6}\b')
+
+    RU_POSTAL_STRICT = re.compile(r'\b[1-9]\d{5}\b')
+
+    @staticmethod
+    def find_in_text(text: str, strict: bool = False) -> List[str]:
+        pattern = RussianPostalCodeValidator.RU_POSTAL_STRICT if strict \
+            else RussianPostalCodeValidator.RU_POSTAL_PATTERN
+
+        return pattern.findall(text)
+
+    @staticmethod
+    def validate_postal_code(code: str, strict: bool = False) -> Tuple[bool, str]:
+        code = code.strip()
+
+        if not RussianPostalCodeValidator.RU_POSTAL_PATTERN.fullmatch(code):
+            return False, "Индекс должен состоять из 6 цифр"
+
+        if strict:
+            if not RussianPostalCodeValidator.RU_POSTAL_STRICT.fullmatch(code):
+                return False, "Первая цифра индекса не может быть 0"
+
+        if not RussianPostalCodeValidator._check_real_ranges(code):
+            return False, "Индекс не соответствует реальным диапазонам"
+
+        return True, "Корректный российский почтовый индекс"
+
+    @staticmethod
+    def _check_real_ranges(code: str) -> bool:
+        try:
+            num = int(code)
+            return 101000 <= num <= 692999
+        except ValueError:
+            return False
+
+    @staticmethod
+    def find_in_file(filepath: str, strict: bool = False) -> List[str]:
+        try:
+            encodings = ['utf-8', 'cp1251', 'koi8-r']
+
+            for encoding in encodings:
+                try:
+                    with open(filepath, 'r', encoding=encoding) as file:
+                        content = file.read()
+                    return RussianPostalCodeValidator.find_in_text(content, strict)
+                except UnicodeDecodeError:
+                    continue
+
+            raise ValueError(f"Не удалось прочитать файл с кодировками: {encodings}")
+
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Файл не найден: {filepath}")
+
+    @staticmethod
+    def find_in_url(url: str, strict: bool = False) -> List[str]:
+        try:
+            parsed_url = urllib.parse.urlparse(url)
+            if not parsed_url.scheme:
+                url = 'http://' + url
+
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            for element in soup(['script', 'style', 'nav', 'header', 'footer']):
+                element.decompose()
+
+            text = soup.get_text()
+            lines = (line.strip() for line in text.splitlines())
+            text = ' '.join(chunk for chunk in lines if chunk)
+
+            return RussianPostalCodeValidator.find_in_text(text, strict)
+
+        except requests.exceptions.RequestException as e:
+            raise ConnectionError(f"Ошибка при загрузке страницы: {e}")
+
+    @staticmethod
+    def format_results(indices: List[str]) -> str:
+        if not indices:
+            return "Почтовые индексы не найдены."
+
+        result = f"Найдено {len(indices)} почтовых индексов:\n"
+        result += "-" * 40 + "\n"
+
+        for i, index in enumerate(indices, 1):
+            result += f"{i:3}. {index}\n"
+
+            if i % 5 == 0 or i == len(indices):
+                region = RussianPostalCodeValidator._get_region_info(index)
+                result += f"     ({region})\n"
+
+        result += "-" * 40
+        return result
+
+    @staticmethod
+    def _get_region_info(postal_code: str) -> str:
+        if not postal_code.isdigit() or len(postal_code) != 6:
+            return "Неизвестный регион"
+
+        first_two = int(postal_code[:2])
+        if 10 <= first_two <= 19:
+            return "Центральный регион"
+        elif 20 <= first_two <= 39:
+            return "Северо-Западный регион"
+        elif 40 <= first_two <= 49:
+            return "Южный регион"
+        elif 50 <= first_two <= 59:
+            return "Приволжский регион"
+        elif 60 <= first_two <= 69:
+            return "Уральский регион"
+        elif 70 <= first_two <= 79:
+            return "Сибирский регион"
+        elif 80 <= first_two <= 89:
+            return "Дальневосточный регион"
+        else:
+            return "Неизвестный регион"
+
+
+class PostalCodeCLI:
+    @staticmethod
+    def show_menu() -> None:
+        print("\n" + "=" * 50)
+        print("ПОИСК РОССИЙСКИХ ПОЧТОВЫХ ИНДЕКСОВ")
+        print("=" * 50)
+        print("1. Поиск в тексте")
+        print("2. Поиск в файле")
+        print("3. Поиск на веб-странице")
+        print("4. Проверить один индекс")
+        print("5. Настройки (строгая проверка)")
+        print("0. Выход")
+
+    @staticmethod
+    def get_user_choice() -> str:
+        return input("\nВыберите действие: ").strip()
+
+    @staticmethod
+    def run() -> None:
+        strict_mode = False
+        validator = RussianPostalCodeValidator
+
+        print("Программа для поиска российских почтовых индексов")
+        print("Российский индекс: 6 цифр, например: 101000, 190000")
+
+        while True:
+            PostalCodeCLI.show_menu()
+            choice = PostalCodeCLI.get_user_choice()
+
+            if choice == '1':
+                text = input("\nВведите текст для поиска:\n")
+                indices = validator.find_in_text(text, strict_mode)
+                print("\n" + validator.format_results(indices))
+
+            elif choice == '2':
+                filepath = input("\nВведите путь к файлу: ").strip()
+                try:
+                    indices = validator.find_in_file(filepath, strict_mode)
+                    print("\n" + validator.format_results(indices))
+                except Exception as e:
+                    print(f"Ошибка: {e}")
+
+            elif choice == '3':
+                url = input("\nВведите URL веб-страницы: ").strip()
+                try:
+                    indices = validator.find_in_url(url, strict_mode)
+                    print("\n" + validator.format_results(indices))
+                except Exception as e:
+                    print(f"Ошибка: {e}")
+
+            elif choice == '4':
+                code = input("\nВведите почтовый индекс для проверки: ").strip()
+                is_valid, message = validator.validate_postal_code(code, strict_mode)
+
+                if is_valid:
+                    print(f"✓ {message}")
+                    region = validator._get_region_info(code)
+                    print(f"  Регион: {region}")
+                else:
+                    print(f"✗ {message}")
+
+            elif choice == '5':
+                strict_mode = not strict_mode
+                mode = "ВКЛЮЧЕН" if strict_mode else "ВЫКЛЮЧЕН"
+                print(f"\nСтрогий режим {mode}")
+                if strict_mode:
+                    print("(проверка, что первая цифра не 0)")
+
+            elif choice == '0':
+                print("\nВыход из программы...")
+                break
+
+            else:
+                print("Неверный выбор. Попробуйте снова.")
+
+            if choice != '0':
+                input("\nНажмите Enter для продолжения...")
